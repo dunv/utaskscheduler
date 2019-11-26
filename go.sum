@@ -1,0 +1,10 @@
+github.com/dunv/concurrentList v1.0.2 h1:FeHDmPORqPeC4VjkkNYavO15TTSfsu9GLvYShkx9axo=
+github.com/dunv/concurrentList v1.0.2/go.mod h1:yERVeKuu92VsZgseA/aTkzZBr60pkrDnz2s/dSXxzVY=
+github.com/dunv/uhelpers v1.0.4 h1:EdxjjhT0n9CfpqQuA4V0A+GAxmFhbtNg9CB8EsHoCH8=
+github.com/dunv/uhelpers v1.0.4/go.mod h1:e01Y+aVv/p2Te+5P5pZb6GiaOBce9jxDXE7bpJaBez4=
+github.com/dunv/uhelpers v1.0.7 h1:KGWCYZo+FO3wbov+OIbhqXG1FHnVP4y+RgQa5b82ipg=
+github.com/dunv/uhelpers v1.0.7/go.mod h1:e01Y+aVv/p2Te+5P5pZb6GiaOBce9jxDXE7bpJaBez4=
+github.com/dunv/ulog v1.0.7 h1:id7TfeobynPsgPGe3S5FSZiVmdKVAfoZXYPWhddR4BI=
+github.com/dunv/ulog v1.0.7/go.mod h1:tLx87vZIy7+srmB52LJ8U6Exqnkj5jJ8AaA8cWQp6xs=
+github.com/google/uuid v1.1.1 h1:Gkbcsh/GbpXz7lPftLA3P6TYMwjCLYm83jiFQZF/3gY=
+github.com/google/uuid v1.1.1/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
