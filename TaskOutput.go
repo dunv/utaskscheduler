@@ -27,5 +27,5 @@ func (t TaskOutput) String() string {
 	if len(output) > 100 {
 		output = output[0:97] + "..."
 	}
-	return fmt.Sprintf("TaskOutput[type:%s output:%s]", t.Type, output)
+	return fmt.Sprintf(`TaskOutput[type:%s output:"%s"]`, t.Type, output)
 }

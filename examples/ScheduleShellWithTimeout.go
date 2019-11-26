@@ -35,7 +35,7 @@ func main() {
 	// }
 	// task := task.NewShellTask("sudo", []string{executablePath}, uhelpers.PtrToDuration(5*time.Second), &outputChannel)
 
-	task := task.NewShellTask("/bin/sh", []string{"-c", "\"echo hello\""}, uhelpers.PtrToDuration(5*time.Second), &outputChannel)
+	task := task.NewShellTask("/bin/sh", []string{"-c", "echo hello"}, uhelpers.PtrToDuration(5*time.Second), &outputChannel)
 	scheduler.Schedule(task)
 
 	<-taskDoneChannel

@@ -15,25 +15,47 @@ import (
 )
 
 type Task struct {
-	TaskGUID           uuid.UUID
-	Type               TaskType
-	Status             TaskStatus
-	Command            string
-	WorkingDir         *string
-	Function           func(returnChannel *chan bool) (context.CancelFunc, []TaskOutput, int)
-	Args               []string
-	StartedAt          *time.Time
-	FinishedAt         *time.Time
-	Timeout            time.Duration
-	Executed           bool
-	Output             []TaskOutput
-	OutputChannel      *chan TaskOutput
-	ReturnChannel      *chan bool
-	ProgressChannel    *chan Task
-	ExitCode           int
-	Error              error
-	TaskMeta           interface{}
-	PanicIfLostControl bool
+	// General attributes
+	TaskGUID uuid.UUID
+	Type     TaskType
+	Status   TaskStatus
+	Timeout  time.Duration
+
+	// Shell-Task attributes
+	Command    string
+	WorkingDir *string
+	Args       []string
+	ExitCode   int
+	Executed   bool
+
+	// If not nil ReturnChannel will receive true or false, depending if the execution was successful
+	ReturnChannel *chan bool
+
+	// If not nil ProgressChannel will receive a copy of the task so its progress can be monitored
+	ProgressChannel *chan Task
+
+	// Function attributes
+	Function func(returnChannel *chan bool) (context.CancelFunc, []TaskOutput, int)
+
+	// If not nil: all output is streamed
+	OutputChannel *chan TaskOutput
+
+	// All output is collected here
+	Output []TaskOutput
+
+	// Variable for transporting metainformation in this task (i.e. what does it belong to etc.)
+	TaskMeta interface{}
+
+	// Information about the execution
+	TimedOut                    bool
+	Cancelled                   bool
+	FinishedWithoutInterference bool
+	Error                       error
+	PanicIfLostControl          bool
+	DoNotKillOrphans            bool
+	NeededToKillOrphans         bool
+	StartedAt                   *time.Time
+	FinishedAt                  *time.Time
 }
 
 func NewShellTask(
@@ -62,7 +84,7 @@ func (t Task) String() string {
 	if len(cmd) > 20 {
 		cmd = cmd[0:17] + "..."
 	}
-	return fmt.Sprintf("Task[type:%s timeout:%s command:%s status:%s]", t.Type, t.Timeout, cmd, t.Status)
+	return fmt.Sprintf(`Task[type:%s timeout:%s command:"%s" status:%s]`, t.Type, t.Timeout, cmd, t.Status)
 }
 
 func (t *Task) Run(progressChannel *chan Task, returnChannel *chan bool) context.CancelFunc {
@@ -140,14 +162,12 @@ func (t *Task) runShell() context.CancelFunc {
 	}
 
 	// So we can return here, the waiting for the task to be done processing is handled in a goRoutine
-	processRegularExitChannel := make(chan bool)
+	processEndedChannel := make(chan bool)
 	go func() {
 		err := cmd.Wait()
 		t.Executed = true
 		t.FinishedAt = uhelpers.PtrToTime(time.Now())
-
-		// Let our timeout-waiter know that we exited in time
-		processRegularExitChannel <- true
+		processEndedChannel <- true
 
 		if err != nil {
 			t.Error = err
@@ -160,12 +180,26 @@ func (t *Task) runShell() context.CancelFunc {
 			}
 
 			t.addOutput(TASK_OUTPUT_STDERR, fmt.Sprintf("Error executing (%s)", err.Error()))
+			t.Status = TASK_STATUS_FAILED
 			t.returnTask(false)
 		} else {
 			t.ExitCode = 0
-
+			t.Status = TASK_STATUS_SUCCESS
 			t.addOutput(TASK_OUTPUT_STDOUT, "Done executing")
 			t.returnTask(true)
+		}
+
+		t.sendProgressUpdate()
+
+		// TODO: check if this creates problems (https://github.com/golang/go/issues/13987)
+		if !t.DoNotKillOrphans {
+			// Make sure there are no remnants left
+			err = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			// fmt.Printf("%+v %T\n", err, err)
+			if err == nil {
+				t.addOutput(TASK_OUTPUT_STDOUT, "Killed orphaned children successfully")
+				t.NeededToKillOrphans = true
+			}
 		}
 	}()
 
@@ -173,9 +207,16 @@ func (t *Task) runShell() context.CancelFunc {
 	select {
 	case <-ctx.Done():
 		t.killProcessGroup(cmd)
+		t.Cancelled = true
+		// After killing cmd.Wait() will return, this way we can cleanly exit here
+		<-processEndedChannel
 	case <-time.After(t.Timeout):
 		t.killProcessGroup(cmd)
-	case <-processRegularExitChannel:
+		t.TimedOut = true
+		// After killing cmd.Wait() will return, this way we can cleanly exit here
+		<-processEndedChannel
+	case <-processEndedChannel:
+		t.FinishedWithoutInterference = true
 	}
 
 	return cancelFunc
@@ -199,7 +240,7 @@ func (t *Task) addOutput(outputType TaskOutputType, outputString string) {
 // Helper for publishing into the returnChannel
 func (t *Task) returnTask(success bool) {
 	if t.ReturnChannel != nil {
-		*t.ReturnChannel <- false
+		*t.ReturnChannel <- success
 	}
 }
 
@@ -246,6 +287,7 @@ func (t *Task) startConsumingOutputOfCommand(cmd *exec.Cmd) {
 func (t *Task) killProcessGroup(cmd *exec.Cmd) {
 	// Take into account that the process could be NOT started yet
 	if cmd.Process != nil {
+
 		// "Use negative process group ID for killing the whole process group"
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		if err != nil {

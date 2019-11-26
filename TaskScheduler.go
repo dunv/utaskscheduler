@@ -64,15 +64,6 @@ func NewTaskScheduler(progressChannel chan Task) TaskScheduler {
 				}
 
 				doneList.Append(tasks)
-				for _, task := range tasks.([]*Task) {
-					switch task.ExitCode {
-					case 0:
-						task.Status = TASK_STATUS_SUCCESS
-					default:
-						task.Status = TASK_STATUS_FAILED
-					}
-					progressChannel <- *task
-				}
 			} else {
 				ulog.Error("No tasks in list, but triggered: this should never happen!")
 				time.Sleep(1 * time.Second)
