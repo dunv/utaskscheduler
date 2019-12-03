@@ -24,7 +24,7 @@ type TaskScheduler struct {
 	doneList       *concurrentList.ConcurrentList
 }
 
-func NewTaskScheduler(progressChannel chan Task) TaskScheduler {
+func NewTaskScheduler(progressChannel *chan Task) TaskScheduler {
 	trigger := make(chan bool)
 	todoList := concurrentList.NewConcurrentList()
 	inProgressList := concurrentList.NewConcurrentList()
@@ -45,7 +45,7 @@ func NewTaskScheduler(progressChannel chan Task) TaskScheduler {
 				waitForAllToBeFinishedChannel := make(chan bool, tasksRunInParallel)
 				for _, task := range tasks.([]*Task) {
 					// progressChannel <- *task
-					task.Run(&progressChannel, &waitForAllToBeFinishedChannel)
+					task.Run(progressChannel, &waitForAllToBeFinishedChannel)
 				}
 
 				// Wait for group to finish

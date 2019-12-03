@@ -35,7 +35,7 @@ type Task struct {
 	ProgressChannel *chan Task
 
 	// Function attributes
-	Function func(returnChannel *chan bool) (context.CancelFunc, []TaskOutput, int)
+	Function func(outputChannel *chan TaskOutput, returnChannel *chan bool) (context.CancelFunc, []TaskOutput, int)
 
 	// If not nil: all output is streamed
 	OutputChannel *chan TaskOutput
@@ -79,12 +79,35 @@ func NewShellTask(
 	}
 }
 
+func NewFunctionTask(
+	function func(outputChannel *chan TaskOutput, returnChannel *chan bool) (context.CancelFunc, []TaskOutput, int),
+	timeout *time.Duration,
+	outputChannel *chan TaskOutput,
+) *Task {
+	usedTimeout := 10 * time.Second
+	if timeout != nil {
+		usedTimeout = *timeout
+	}
+
+	return &Task{
+		TaskGUID:      uuid.New(),
+		Type:          TASK_TYPE_FUNCTION,
+		OutputChannel: outputChannel,
+		Function:      function,
+		Timeout:       usedTimeout,
+	}
+}
+
 func (t Task) String() string {
 	cmd := t.Command
 	if len(cmd) > 20 {
 		cmd = cmd[0:17] + "..."
 	}
-	return fmt.Sprintf(`Task[type:%s timeout:%s command:"%s" status:%s]`, t.Type, t.Timeout, cmd, t.Status)
+	if t.Type == TASK_TYPE_FUNCTION {
+		return fmt.Sprintf(`Task[type:%s timeout:%s status:%s]`, t.Type, t.Timeout, t.Status)
+	} else {
+		return fmt.Sprintf(`Task[type:%s timeout:%s command:"%s" status:%s]`, t.Type, t.Timeout, cmd, t.Status)
+	}
 }
 
 func (t *Task) Run(progressChannel *chan Task, returnChannel *chan bool) context.CancelFunc {
@@ -101,15 +124,17 @@ func (t *Task) Run(progressChannel *chan Task, returnChannel *chan bool) context
 
 func (t *Task) runFunction() context.CancelFunc {
 	var cancelFunction context.CancelFunc
-	// TODO: transport cancelFunc in a safe manner
+	// TODO: start function in context so it can be cancelled
+	// TODO: have incremental output for the function
+	// TODO: add intermediate channel for function output
 	go func() {
 		t.StartedAt = uhelpers.PtrToTime(time.Now())
 		t.Status = TASK_STATUS_IN_PROGRESS
 		t.sendProgressUpdate()
-		cancelFunction, t.Output, t.ExitCode = t.Function(t.ReturnChannel)
+		cancelFunction, t.Output, t.ExitCode = t.Function(t.OutputChannel, t.ReturnChannel)
 		t.FinishedAt = uhelpers.PtrToTime(time.Now())
-
 		t.Executed = true
+
 		for _, output := range t.Output {
 			if t.OutputChannel != nil {
 				output.TaskGUID = t.TaskGUID
@@ -117,7 +142,15 @@ func (t *Task) runFunction() context.CancelFunc {
 				*t.OutputChannel <- output
 			}
 		}
-		t.returnTask(true)
+
+		if t.ExitCode == 0 {
+			t.Status = TASK_STATUS_SUCCESS
+			t.returnTask(true)
+		} else {
+			t.Status = TASK_STATUS_FAILED
+			t.returnTask(false)
+		}
+		t.sendProgressUpdate()
 	}()
 	return cancelFunction
 }
@@ -158,6 +191,9 @@ func (t *Task) runShell() context.CancelFunc {
 		t.ExitCode = -1
 		t.Error = err
 		t.addOutput(TASK_OUTPUT_STDERR, fmt.Sprintf("Error starting (%s)", err.Error()))
+		t.Status = TASK_STATUS_FAILED
+		t.returnTask(false)
+		t.sendProgressUpdate()
 		return cancelFunc
 	}
 
@@ -228,7 +264,7 @@ func (t *Task) addOutput(outputType TaskOutputType, outputString string) {
 		TaskGUID: t.TaskGUID,
 		TaskMeta: t.TaskMeta,
 		Time:     time.Now(),
-		Type:     TASK_OUTPUT_STDERR,
+		Type:     outputType,
 		Output:   outputString,
 	}
 	if t.OutputChannel != nil {
