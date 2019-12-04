@@ -35,7 +35,7 @@ type Task struct {
 	ProgressChannel *chan Task
 
 	// Function attributes
-	Function func(outputChannel *chan TaskOutput, returnChannel *chan bool) (context.CancelFunc, []TaskOutput, int)
+	Function func(ctx context.Context, outputChannel chan string) int
 
 	// If not nil: all output is streamed
 	OutputChannel *chan TaskOutput
@@ -80,7 +80,7 @@ func NewShellTask(
 }
 
 func NewFunctionTask(
-	function func(outputChannel *chan TaskOutput, returnChannel *chan bool) (context.CancelFunc, []TaskOutput, int),
+	function func(ctx context.Context, outputChannel chan string) int,
 	timeout *time.Duration,
 	outputChannel *chan TaskOutput,
 ) *Task {
@@ -123,35 +123,36 @@ func (t *Task) Run(progressChannel *chan Task, returnChannel *chan bool) context
 }
 
 func (t *Task) runFunction() context.CancelFunc {
-	var cancelFunction context.CancelFunc
-	// TODO: start function in context so it can be cancelled
-	// TODO: have incremental output for the function
-	// TODO: add intermediate channel for function output
-	go func() {
-		t.StartedAt = uhelpers.PtrToTime(time.Now())
-		t.Status = TASK_STATUS_IN_PROGRESS
-		t.sendProgressUpdate()
-		cancelFunction, t.Output, t.ExitCode = t.Function(t.OutputChannel, t.ReturnChannel)
-		t.FinishedAt = uhelpers.PtrToTime(time.Now())
-		t.Executed = true
+	functionOutputChannel := make(chan string)
+	ctx, cancelFunction := context.WithTimeout(context.Background(), t.Timeout)
 
-		for _, output := range t.Output {
-			if t.OutputChannel != nil {
-				output.TaskGUID = t.TaskGUID
-				output.TaskMeta = t.TaskMeta
-				*t.OutputChannel <- output
-			}
+	go func(functionOutputChannel chan string) {
+		for output := range functionOutputChannel {
+			t.addOutput(TASK_OUTPUT_STDOUT, output)
+		}
+	}(functionOutputChannel)
+
+	go func(ctx context.Context, functionOutputChannel chan string) {
+		t.markAsInProgress()
+
+		// We are not adding a timeout here, so if a function runs indefinitely this is blocking as well.
+		// Canceling needs to be handled within function
+		exitCode := t.Function(ctx, functionOutputChannel)
+
+		close(functionOutputChannel)
+
+		// If context has timed out -> set exitCode manually and add output
+		if ctx.Err() != nil {
+			exitCode = -1
+			t.addOutput(TASK_OUTPUT_STDERR, ctx.Err().Error())
 		}
 
-		if t.ExitCode == 0 {
-			t.Status = TASK_STATUS_SUCCESS
-			t.returnTask(true)
+		if exitCode == 0 {
+			t.markAsSuccessful()
 		} else {
-			t.Status = TASK_STATUS_FAILED
-			t.returnTask(false)
+			t.markAsFailed(exitCode, ctx.Err())
 		}
-		t.sendProgressUpdate()
-	}()
+	}(ctx, functionOutputChannel)
 	return cancelFunction
 }
 
@@ -172,13 +173,7 @@ func (t *Task) runShell() context.CancelFunc {
 		cmd.Dir = *t.WorkingDir
 	}
 
-	// initial output (helps for debugging what is actually being run here)
-	t.addOutput(TASK_OUTPUT_STDOUT, fmt.Sprintf("Running command '%s %s'", t.Command, strings.Join(t.Args, " ")))
-
-	// initialize task and listeners
-	t.StartedAt = uhelpers.PtrToTime(time.Now())
-	t.Status = TASK_STATUS_IN_PROGRESS
-	t.sendProgressUpdate()
+	// Start listeners for output
 	t.startConsumingOutputOfCommand(cmd)
 
 	// actually start the task
@@ -186,16 +181,13 @@ func (t *Task) runShell() context.CancelFunc {
 
 	// if the task could not be started -> set task attrs, publish err to output and return
 	if err != nil {
-		t.FinishedAt = uhelpers.PtrToTime(time.Now())
-		t.Executed = true
-		t.ExitCode = -1
-		t.Error = err
-		t.addOutput(TASK_OUTPUT_STDERR, fmt.Sprintf("Error starting (%s)", err.Error()))
-		t.Status = TASK_STATUS_FAILED
-		t.returnTask(false)
-		t.sendProgressUpdate()
+		t.markAsFailed(-1, err, fmt.Sprintf("Error starting (%s)", err.Error()))
 		return cancelFunc
 	}
+
+	// initial output (helps for debugging what is actually being run here)
+	t.addOutput(TASK_OUTPUT_STDOUT, fmt.Sprintf("Running command '%s %s'", t.Command, strings.Join(t.Args, " ")))
+	t.markAsInProgress()
 
 	// So we can return here, the waiting for the task to be done processing is handled in a goRoutine
 	processEndedChannel := make(chan bool)
@@ -206,26 +198,17 @@ func (t *Task) runShell() context.CancelFunc {
 		processEndedChannel <- true
 
 		if err != nil {
-			t.Error = err
-
 			// Default to exit-code -1
-			t.ExitCode = -1
+			exitCode := -1
 			switch parsedErr := err.(type) {
 			case *exec.ExitError:
-				t.ExitCode = parsedErr.ExitCode()
+				exitCode = parsedErr.ExitCode()
 			}
 
-			t.addOutput(TASK_OUTPUT_STDERR, fmt.Sprintf("Error executing (%s)", err.Error()))
-			t.Status = TASK_STATUS_FAILED
-			t.returnTask(false)
+			t.markAsFailed(exitCode, err, fmt.Sprintf("Error executing (%s)", err.Error()))
 		} else {
-			t.ExitCode = 0
-			t.Status = TASK_STATUS_SUCCESS
-			t.addOutput(TASK_OUTPUT_STDOUT, "Done executing")
-			t.returnTask(true)
+			t.markAsSuccessful("Done executing")
 		}
-
-		t.sendProgressUpdate()
 
 		// TODO: check if this creates problems (https://github.com/golang/go/issues/13987)
 		if !t.DoNotKillOrphans {
@@ -338,4 +321,35 @@ func (t *Task) killProcessGroup(cmd *exec.Cmd) {
 			}
 		}
 	}
+}
+
+func (t *Task) markAsInProgress() {
+	t.StartedAt = uhelpers.PtrToTime(time.Now())
+	t.Status = TASK_STATUS_IN_PROGRESS
+	t.sendProgressUpdate()
+}
+
+func (t *Task) markAsFailed(exitCode int, err error, output ...string) {
+	t.FinishedAt = uhelpers.PtrToTime(time.Now())
+	t.Executed = true
+	t.ExitCode = exitCode
+	t.Error = err
+	if len(output) > 0 {
+		t.addOutput(TASK_OUTPUT_STDERR, strings.Join(output, ", "))
+	}
+	t.Status = TASK_STATUS_FAILED
+	t.returnTask(false)
+	t.sendProgressUpdate()
+}
+
+func (t *Task) markAsSuccessful(output ...string) {
+	t.FinishedAt = uhelpers.PtrToTime(time.Now())
+	t.Executed = true
+	t.ExitCode = 0
+	if len(output) > 0 {
+		t.addOutput(TASK_OUTPUT_STDOUT, strings.Join(output, ", "))
+	}
+	t.Status = TASK_STATUS_SUCCESS
+	t.returnTask(true)
+	t.sendProgressUpdate()
 }

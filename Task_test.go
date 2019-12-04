@@ -61,17 +61,10 @@ func TestShellTaskEndlessWithDetachedChildren(t *testing.T) {
 }
 
 func TestFunctionSuccess(t *testing.T) {
-	success := runFunction(func(taskOutputChannel *chan TaskOutput, returnChannel *chan bool) (context.CancelFunc, []TaskOutput, int) {
-		_, cancelFunc := context.WithCancel(context.Background())
-		output := TaskOutput{
-			Type:   TASK_OUTPUT_STDOUT,
-			Output: "TestOutputBeforeSuccess",
-		}
+	success := runFunction(func(ctx context.Context, taskOutputChannel chan string) int {
+		taskOutputChannel <- "TestOutputBeforeSuccess"
 		time.Sleep(time.Second)
-		if taskOutputChannel != nil {
-			*taskOutputChannel <- output
-		}
-		return cancelFunc, []TaskOutput{}, 0
+		return 0
 	}, 2*time.Second)
 	if !success {
 		t.Error("Function exited with error, but should have not")
@@ -79,20 +72,29 @@ func TestFunctionSuccess(t *testing.T) {
 }
 
 func TestFunctionError(t *testing.T) {
-	success := runFunction(func(taskOutputChannel *chan TaskOutput, returnChannel *chan bool) (context.CancelFunc, []TaskOutput, int) {
-		_, cancelFunc := context.WithCancel(context.Background())
-		output := TaskOutput{
-			Type:   TASK_OUTPUT_STDOUT,
-			Output: "TestOutputBeforeError",
-		}
+	success := runFunction(func(ctx context.Context, taskOutputChannel chan string) int {
+		taskOutputChannel <- "TestOutputBeforeError"
 		time.Sleep(200 * time.Millisecond)
-		if taskOutputChannel != nil {
-			*taskOutputChannel <- output
-		}
-		return cancelFunc, []TaskOutput{output}, -1
+		return -1
 	}, 2*time.Second)
 	if success {
 		t.Error("Function exited with error, but should have not")
+	}
+}
+
+func TestFunctionTimeout(t *testing.T) {
+	success := runFunction(func(ctx context.Context, taskOutputChannel chan string) int {
+		taskOutputChannel <- "TestOutputBeforeTimeout"
+		select {
+		case <-time.After(2 * time.Second):
+			taskOutputChannel <- "TestOutputAfterTimeout (this should not be printed)"
+		case <-ctx.Done():
+			taskOutputChannel <- "Caught context timeout"
+		}
+		return 0
+	}, 1*time.Second)
+	if success {
+		t.Error("Function exited with sucess, but should have not")
 	}
 }
 
@@ -110,7 +112,7 @@ func runShell(cmd string, args []string, timeout time.Duration, workingDir ...st
 	return success
 }
 
-func runFunction(function func(outputChannel *chan TaskOutput, returnChannel *chan bool) (context.CancelFunc, []TaskOutput, int), timeout time.Duration) bool {
+func runFunction(function func(ctx context.Context, outputChannel chan string) int, timeout time.Duration) bool {
 	progressChannel, outputChannel := setupTaskProgress()
 	task := NewFunctionTask(function, uhelpers.PtrToDuration(timeout), outputChannel)
 	returnChannel := make(chan bool)
