@@ -24,7 +24,7 @@ type TaskScheduler struct {
 	doneList       *concurrentList.ConcurrentList
 }
 
-func NewTaskScheduler(progressChannel *chan Task) TaskScheduler {
+func NewTaskScheduler(progressChannel *chan *Task) TaskScheduler {
 	trigger := make(chan bool)
 	todoList := concurrentList.NewConcurrentList()
 	inProgressList := concurrentList.NewConcurrentList()
@@ -92,7 +92,7 @@ func (s TaskScheduler) ScheduleParallel(tasks []*Task) {
 
 func (s TaskScheduler) Schedule(task *Task) {
 	s.todoList.Append([]*Task{task})
-	task.Status = TASK_STATUS_SCHEDULED
+	task.MarkAsScheduled()
 	s.triggerScheduling()
 }
 
@@ -115,27 +115,27 @@ func (s TaskScheduler) DetailedStats() map[SchedulerQueue]interface{} {
 	todoStats := []map[string]interface{}{}
 	for _, task := range s.todoList.GetWithFilter(func(item interface{}) bool { return true }) {
 		todoStats = append(todoStats, map[string]interface{}{
-			"taskGuid": task.([]*Task)[0].TaskGUID,
-			"taskMeta": task.([]*Task)[0].TaskMeta,
+			"taskGuid": task.([]*Task)[0].GUID(),
+			"taskMeta": task.([]*Task)[0].Meta(),
 		})
 	}
 	inProgressStats := []map[string]interface{}{}
 	for _, task := range s.inProgressList.GetWithFilter(func(item interface{}) bool { return true }) {
 		inProgressStats = append(inProgressStats, map[string]interface{}{
-			"taskGuid":  task.([]*Task)[0].TaskGUID,
-			"taskMeta":  task.([]*Task)[0].TaskMeta,
-			"startedAt": task.([]*Task)[0].StartedAt,
+			"taskGuid":  task.([]*Task)[0].GUID(),
+			"taskMeta":  task.([]*Task)[0].Meta(),
+			"startedAt": task.([]*Task)[0].StartedAt(),
 		})
 	}
 	doneStats := []map[string]interface{}{}
 	for _, task := range s.doneList.GetWithFilter(func(item interface{}) bool { return true }) {
 		doneStats = append(doneStats, map[string]interface{}{
-			"taskGuid":   task.([]*Task)[0].TaskGUID,
-			"taskMeta":   task.([]*Task)[0].TaskMeta,
-			"startedAt":  task.([]*Task)[0].StartedAt,
-			"finishedAt": task.([]*Task)[0].FinishedAt,
-			"exitCode":   task.([]*Task)[0].ExitCode,
-			"error":      task.([]*Task)[0].Error,
+			"taskGuid":   task.([]*Task)[0].GUID(),
+			"taskMeta":   task.([]*Task)[0].Meta(),
+			"startedAt":  task.([]*Task)[0].StartedAt(),
+			"finishedAt": task.([]*Task)[0].FinishedAt(),
+			"exitCode":   task.([]*Task)[0].ExitCode(),
+			"error":      task.([]*Task)[0].Error(),
 		})
 	}
 
@@ -170,7 +170,7 @@ func (s TaskScheduler) TaskByUUID(queueName SchedulerQueue, taskGUID uuid.UUID) 
 	}
 	tasks := list.GetWithFilter(func(item interface{}) bool {
 		for _, subItem := range item.([]*Task) {
-			if subItem.TaskGUID == taskGUID {
+			if subItem.GUID() == taskGUID {
 				return true
 			}
 		}
@@ -184,7 +184,7 @@ func (s TaskScheduler) TaskByUUID(queueName SchedulerQueue, taskGUID uuid.UUID) 
 
 	var correctIndex int
 	for index, subItem := range tasks[0].([]*Task) {
-		if subItem.TaskGUID == taskGUID {
+		if subItem.GUID() == taskGUID {
 			correctIndex = index
 		}
 	}

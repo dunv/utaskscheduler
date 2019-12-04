@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,46 +17,50 @@ import (
 
 type Task struct {
 	// General attributes
-	TaskGUID uuid.UUID
-	Type     TaskType
-	Status   TaskStatus
-	Timeout  time.Duration
+	taskGUID uuid.UUID
+	taskType TaskType
+	status   TaskStatus
+	timeout  time.Duration
 
 	// Shell-Task attributes
-	Command    string
-	WorkingDir *string
-	Args       []string
-	ExitCode   int
-	Executed   bool
+	command    string
+	workingDir *string
+	args       []string
+	exitCode   int
+	executed   bool
 
 	// If not nil ReturnChannel will receive true or false, depending if the execution was successful
-	ReturnChannel *chan bool
+	returnChannel *chan bool
 
 	// If not nil ProgressChannel will receive a copy of the task so its progress can be monitored
-	ProgressChannel *chan Task
+	progressChannel *chan *Task
 
 	// Function attributes
-	Function func(ctx context.Context, outputChannel chan string) int
+	function func(ctx context.Context, outputChannel chan string) int
 
 	// If not nil: all output is streamed
-	OutputChannel *chan TaskOutput
+	outputChannel *chan TaskOutput
 
 	// All output is collected here
-	Output []TaskOutput
+	output []TaskOutput
 
 	// Variable for transporting metainformation in this task (i.e. what does it belong to etc.)
-	TaskMeta interface{}
+	taskMeta interface{}
 
 	// Information about the execution
-	TimedOut                    bool
-	Cancelled                   bool
-	FinishedWithoutInterference bool
-	Error                       error
+	timedOut                    bool
+	cancelled                   bool
+	finishedWithoutInterference bool
+	taskError                   error
 	PanicIfLostControl          bool
 	DoNotKillOrphans            bool
-	NeededToKillOrphans         bool
-	StartedAt                   *time.Time
-	FinishedAt                  *time.Time
+	neededToKillOrphans         bool
+	startedAt                   *time.Time
+	finishedAt                  *time.Time
+
+	// making this construct thread-safe
+	outputLock sync.Mutex
+	statusLock sync.Mutex
 }
 
 func NewShellTask(
@@ -70,12 +75,12 @@ func NewShellTask(
 	}
 
 	return &Task{
-		TaskGUID:      uuid.New(),
-		Type:          TASK_TYPE_SHELL,
-		OutputChannel: outputChannel,
-		Command:       command,
-		Args:          args,
-		Timeout:       usedTimeout,
+		taskGUID:      uuid.New(),
+		taskType:      TASK_TYPE_SHELL,
+		outputChannel: outputChannel,
+		command:       command,
+		args:          args,
+		timeout:       usedTimeout,
 	}
 }
 
@@ -90,31 +95,31 @@ func NewFunctionTask(
 	}
 
 	return &Task{
-		TaskGUID:      uuid.New(),
-		Type:          TASK_TYPE_FUNCTION,
-		OutputChannel: outputChannel,
-		Function:      function,
-		Timeout:       usedTimeout,
+		taskGUID:      uuid.New(),
+		taskType:      TASK_TYPE_FUNCTION,
+		outputChannel: outputChannel,
+		function:      function,
+		timeout:       usedTimeout,
 	}
 }
 
-func (t Task) String() string {
-	cmd := t.Command
+func (t *Task) String() string {
+	cmd := t.command
 	if len(cmd) > 20 {
 		cmd = cmd[0:17] + "..."
 	}
-	if t.Type == TASK_TYPE_FUNCTION {
-		return fmt.Sprintf(`Task[type:%s timeout:%s status:%s]`, t.Type, t.Timeout, t.Status)
+	if t.taskType == TASK_TYPE_FUNCTION {
+		return fmt.Sprintf(`Task[type:%s timeout:%s status:%s]`, t.taskType, t.timeout, t.status)
 	} else {
-		return fmt.Sprintf(`Task[type:%s timeout:%s command:"%s" status:%s]`, t.Type, t.Timeout, cmd, t.Status)
+		return fmt.Sprintf(`Task[type:%s timeout:%s command:"%s" status:%s]`, t.taskType, t.timeout, cmd, t.status)
 	}
 }
 
-func (t *Task) Run(progressChannel *chan Task, returnChannel *chan bool) context.CancelFunc {
-	t.ReturnChannel = returnChannel
-	t.ProgressChannel = progressChannel
+func (t *Task) Run(progressChannel *chan *Task, returnChannel *chan bool) context.CancelFunc {
+	t.returnChannel = returnChannel
+	t.progressChannel = progressChannel
 
-	switch t.Type {
+	switch t.taskType {
 	case TASK_TYPE_SHELL:
 		return t.runShell()
 	default:
@@ -124,7 +129,7 @@ func (t *Task) Run(progressChannel *chan Task, returnChannel *chan bool) context
 
 func (t *Task) runFunction() context.CancelFunc {
 	functionOutputChannel := make(chan string)
-	ctx, cancelFunction := context.WithTimeout(context.Background(), t.Timeout)
+	ctx, cancelFunction := context.WithTimeout(context.Background(), t.timeout)
 
 	go func(functionOutputChannel chan string) {
 		for output := range functionOutputChannel {
@@ -137,7 +142,7 @@ func (t *Task) runFunction() context.CancelFunc {
 
 		// We are not adding a timeout here, so if a function runs indefinitely this is blocking as well.
 		// Canceling needs to be handled within function
-		exitCode := t.Function(ctx, functionOutputChannel)
+		exitCode := t.function(ctx, functionOutputChannel)
 
 		close(functionOutputChannel)
 
@@ -160,7 +165,7 @@ func (t *Task) runShell() context.CancelFunc {
 	// as exec.CommandContext predefinedly "only" sends cmd.Process.Kill(), we cannot use it here (https://golang.org/pkg/os/exec/#CommandContext)
 	// we want the childProcess and all other descendants to be killed as well
 	// https://medium.com/@felixge/killing-a-child-process-and-all-of-its-children-in-go-54079af94773
-	cmd := exec.Command(t.Command, t.Args...)
+	cmd := exec.Command(t.command, t.args...)
 
 	// Create our own context, so we can give a handle back which kills the process the way we want it to
 	ctx, cancelFunc := context.WithCancel(context.Background())
@@ -169,8 +174,8 @@ func (t *Task) runShell() context.CancelFunc {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	// set working dir only if set in task
-	if t.WorkingDir != nil {
-		cmd.Dir = *t.WorkingDir
+	if t.workingDir != nil {
+		cmd.Dir = *t.workingDir
 	}
 
 	// Start listeners for output
@@ -186,15 +191,13 @@ func (t *Task) runShell() context.CancelFunc {
 	}
 
 	// initial output (helps for debugging what is actually being run here)
-	t.addOutput(TASK_OUTPUT_STDOUT, fmt.Sprintf("Running command '%s %s'", t.Command, strings.Join(t.Args, " ")))
+	t.addOutput(TASK_OUTPUT_STDOUT, fmt.Sprintf("Running command '%s %s'", t.command, strings.Join(t.args, " ")))
 	t.markAsInProgress()
 
 	// So we can return here, the waiting for the task to be done processing is handled in a goRoutine
 	processEndedChannel := make(chan bool)
 	go func() {
 		err := cmd.Wait()
-		t.Executed = true
-		t.FinishedAt = uhelpers.PtrToTime(time.Now())
 		processEndedChannel <- true
 
 		if err != nil {
@@ -217,7 +220,7 @@ func (t *Task) runShell() context.CancelFunc {
 			// fmt.Printf("%+v %T\n", err, err)
 			if err == nil {
 				t.addOutput(TASK_OUTPUT_STDOUT, "Killed orphaned children successfully")
-				t.NeededToKillOrphans = true
+				t.neededToKillOrphans = true
 			}
 		}
 	}()
@@ -226,16 +229,16 @@ func (t *Task) runShell() context.CancelFunc {
 	select {
 	case <-ctx.Done():
 		t.killProcessGroup(cmd)
-		t.Cancelled = true
+		t.cancelled = true
 		// After killing cmd.Wait() will return, this way we can cleanly exit here
 		<-processEndedChannel
-	case <-time.After(t.Timeout):
+	case <-time.After(t.timeout):
 		t.killProcessGroup(cmd)
-		t.TimedOut = true
+		t.timedOut = true
 		// After killing cmd.Wait() will return, this way we can cleanly exit here
 		<-processEndedChannel
 	case <-processEndedChannel:
-		t.FinishedWithoutInterference = true
+		t.finishedWithoutInterference = true
 	}
 
 	return cancelFunc
@@ -243,30 +246,32 @@ func (t *Task) runShell() context.CancelFunc {
 
 // Helper for processing output
 func (t *Task) addOutput(outputType TaskOutputType, outputString string) {
+	t.outputLock.Lock()
+	defer t.outputLock.Unlock()
 	output := TaskOutput{
-		TaskGUID: t.TaskGUID,
-		TaskMeta: t.TaskMeta,
+		TaskGUID: t.taskGUID,
+		TaskMeta: t.taskMeta,
 		Time:     time.Now(),
 		Type:     outputType,
 		Output:   outputString,
 	}
-	if t.OutputChannel != nil {
-		*t.OutputChannel <- output
+	if t.outputChannel != nil {
+		*t.outputChannel <- output
 	}
-	t.Output = append(t.Output, output)
+	t.output = append(t.output, output)
 }
 
 // Helper for publishing into the returnChannel
 func (t *Task) returnTask(success bool) {
-	if t.ReturnChannel != nil {
-		*t.ReturnChannel <- success
+	if t.returnChannel != nil {
+		*t.returnChannel <- success
 	}
 }
 
 // Helper for publishing into the progressUpdateChannel
 func (t *Task) sendProgressUpdate() {
-	if t.ProgressChannel != nil {
-		*t.ProgressChannel <- *t
+	if t.progressChannel != nil {
+		*t.progressChannel <- t
 	}
 }
 
@@ -323,33 +328,84 @@ func (t *Task) killProcessGroup(cmd *exec.Cmd) {
 	}
 }
 
+func (t *Task) MarkAsScheduled() {
+	t.statusLock.Lock()
+	defer t.statusLock.Unlock()
+	t.status = TASK_STATUS_SCHEDULED
+	t.sendProgressUpdate()
+}
+
 func (t *Task) markAsInProgress() {
-	t.StartedAt = uhelpers.PtrToTime(time.Now())
-	t.Status = TASK_STATUS_IN_PROGRESS
+	t.statusLock.Lock()
+	defer t.statusLock.Unlock()
+	t.startedAt = uhelpers.PtrToTime(time.Now())
+	t.status = TASK_STATUS_IN_PROGRESS
 	t.sendProgressUpdate()
 }
 
 func (t *Task) markAsFailed(exitCode int, err error, output ...string) {
-	t.FinishedAt = uhelpers.PtrToTime(time.Now())
-	t.Executed = true
-	t.ExitCode = exitCode
-	t.Error = err
+	t.statusLock.Lock()
+	defer t.statusLock.Unlock()
+	t.finishedAt = uhelpers.PtrToTime(time.Now())
+	t.executed = true
+	t.exitCode = exitCode
+	t.taskError = err
 	if len(output) > 0 {
 		t.addOutput(TASK_OUTPUT_STDERR, strings.Join(output, ", "))
 	}
-	t.Status = TASK_STATUS_FAILED
+	t.status = TASK_STATUS_FAILED
 	t.returnTask(false)
 	t.sendProgressUpdate()
 }
 
 func (t *Task) markAsSuccessful(output ...string) {
-	t.FinishedAt = uhelpers.PtrToTime(time.Now())
-	t.Executed = true
-	t.ExitCode = 0
+	t.statusLock.Lock()
+	defer t.statusLock.Unlock()
+	t.finishedAt = uhelpers.PtrToTime(time.Now())
+	t.executed = true
+	t.exitCode = 0
 	if len(output) > 0 {
 		t.addOutput(TASK_OUTPUT_STDOUT, strings.Join(output, ", "))
 	}
-	t.Status = TASK_STATUS_SUCCESS
+	t.status = TASK_STATUS_SUCCESS
 	t.returnTask(true)
 	t.sendProgressUpdate()
+}
+
+func (t *Task) GUID() uuid.UUID {
+	return t.taskGUID
+}
+
+func (t *Task) Status() TaskStatus {
+	t.statusLock.Lock()
+	defer t.statusLock.Unlock()
+	return t.status
+}
+
+func (t *Task) Meta() interface{} {
+	return t.taskMeta
+}
+
+func (t *Task) StartedAt() time.Time {
+	t.statusLock.Lock()
+	defer t.statusLock.Unlock()
+	return *t.startedAt
+}
+
+func (t *Task) FinishedAt() time.Time {
+	t.statusLock.Lock()
+	defer t.statusLock.Unlock()
+	return *t.finishedAt
+}
+
+func (t *Task) ExitCode() int {
+	t.statusLock.Lock()
+	defer t.statusLock.Unlock()
+	return t.exitCode
+}
+
+func (t *Task) Error() error {
+	t.statusLock.Lock()
+	defer t.statusLock.Unlock()
+	return t.taskError
 }

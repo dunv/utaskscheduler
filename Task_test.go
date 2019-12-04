@@ -102,7 +102,7 @@ func runShell(cmd string, args []string, timeout time.Duration, workingDir ...st
 	progressChannel, outputChannel := setupTaskProgress()
 	task := NewShellTask(cmd, args, uhelpers.PtrToDuration(timeout), outputChannel)
 	if len(workingDir) == 1 {
-		task.WorkingDir = uhelpers.PtrToString(workingDir[0])
+		task.workingDir = uhelpers.PtrToString(workingDir[0])
 	}
 	returnChannel := make(chan bool)
 	task.Run(progressChannel, &returnChannel)
@@ -123,8 +123,8 @@ func runFunction(function func(ctx context.Context, outputChannel chan string) i
 	return success
 }
 
-func setupTaskProgress() (*chan Task, *chan TaskOutput) {
-	progressChannel := make(chan Task)
+func setupTaskProgress() (*chan *Task, *chan TaskOutput) {
+	progressChannel := make(chan *Task)
 	outputChannel := make(chan TaskOutput)
 
 	go func(outputChannel chan TaskOutput) {
@@ -133,7 +133,7 @@ func setupTaskProgress() (*chan Task, *chan TaskOutput) {
 		}
 	}(outputChannel)
 
-	go func(progressChannel chan Task) {
+	go func(progressChannel chan *Task) {
 		for progress := range progressChannel {
 			ulog.Info(progress)
 		}
