@@ -103,6 +103,19 @@ func NewFunctionTask(
 	}
 }
 
+func NewFakeFailedTask(err error, taskMeta interface{}) *Task {
+	return &Task{
+		taskGUID:   uuid.New(),
+		status:     TASK_STATUS_FAILED,
+		startedAt:  uhelpers.PtrToTime(time.Now()),
+		finishedAt: uhelpers.PtrToTime(time.Now()),
+		executed:   true,
+		exitCode:   -1,
+		taskError:  err,
+		taskMeta:   taskMeta,
+	}
+}
+
 func (t *Task) String() string {
 	cmd := t.command
 	if len(cmd) > 20 {
@@ -330,44 +343,48 @@ func (t *Task) killProcessGroup(cmd *exec.Cmd) {
 
 func (t *Task) MarkAsScheduled() {
 	t.statusLock.Lock()
-	defer t.statusLock.Unlock()
 	t.status = TASK_STATUS_SCHEDULED
+	t.statusLock.Unlock()
+
 	t.sendProgressUpdate()
 }
 
 func (t *Task) markAsInProgress() {
 	t.statusLock.Lock()
-	defer t.statusLock.Unlock()
 	t.startedAt = uhelpers.PtrToTime(time.Now())
 	t.status = TASK_STATUS_IN_PROGRESS
+	t.statusLock.Unlock()
+
 	t.sendProgressUpdate()
 }
 
 func (t *Task) markAsFailed(exitCode int, err error, output ...string) {
 	t.statusLock.Lock()
-	defer t.statusLock.Unlock()
 	t.finishedAt = uhelpers.PtrToTime(time.Now())
 	t.executed = true
 	t.exitCode = exitCode
 	t.taskError = err
+	t.status = TASK_STATUS_FAILED
+	t.statusLock.Unlock()
+
 	if len(output) > 0 {
 		t.addOutput(TASK_OUTPUT_STDERR, strings.Join(output, ", "))
 	}
-	t.status = TASK_STATUS_FAILED
 	t.returnTask(false)
 	t.sendProgressUpdate()
 }
 
 func (t *Task) markAsSuccessful(output ...string) {
 	t.statusLock.Lock()
-	defer t.statusLock.Unlock()
 	t.finishedAt = uhelpers.PtrToTime(time.Now())
 	t.executed = true
 	t.exitCode = 0
+	t.status = TASK_STATUS_SUCCESS
+	t.statusLock.Unlock()
+
 	if len(output) > 0 {
 		t.addOutput(TASK_OUTPUT_STDOUT, strings.Join(output, ", "))
 	}
-	t.status = TASK_STATUS_SUCCESS
 	t.returnTask(true)
 	t.sendProgressUpdate()
 }
@@ -376,26 +393,52 @@ func (t *Task) GUID() uuid.UUID {
 	return t.taskGUID
 }
 
+func (t *Task) Command() string {
+	return t.command
+}
+
+func (t *Task) Args() []string {
+	return t.args
+}
+
+func (t *Task) SetWorkingDir(dir string) error {
+	if t.StartedAt() != nil {
+		return fmt.Errorf("task already in progress, cannot set working dir")
+	}
+
+	t.workingDir = uhelpers.PtrToString(dir)
+	return nil
+}
+
 func (t *Task) Status() TaskStatus {
 	t.statusLock.Lock()
 	defer t.statusLock.Unlock()
 	return t.status
 }
 
+func (t *Task) SetMeta(meta interface{}) error {
+	if t.StartedAt() != nil {
+		return fmt.Errorf("task already in progress, cannot set meta")
+	}
+
+	t.taskMeta = meta
+	return nil
+}
+
 func (t *Task) Meta() interface{} {
 	return t.taskMeta
 }
 
-func (t *Task) StartedAt() time.Time {
+func (t *Task) StartedAt() *time.Time {
 	t.statusLock.Lock()
 	defer t.statusLock.Unlock()
-	return *t.startedAt
+	return t.startedAt
 }
 
-func (t *Task) FinishedAt() time.Time {
+func (t *Task) FinishedAt() *time.Time {
 	t.statusLock.Lock()
 	defer t.statusLock.Unlock()
-	return *t.finishedAt
+	return t.finishedAt
 }
 
 func (t *Task) ExitCode() int {
@@ -408,4 +451,10 @@ func (t *Task) Error() error {
 	t.statusLock.Lock()
 	defer t.statusLock.Unlock()
 	return t.taskError
+}
+
+func (t *Task) Executed() bool {
+	t.statusLock.Lock()
+	defer t.statusLock.Unlock()
+	return t.executed
 }
