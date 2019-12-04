@@ -11,7 +11,7 @@ import (
 func main() {
 	progressChannel := make(chan task.Task)
 	outputChannel := make(chan task.TaskOutput)
-	scheduler := task.NewTaskScheduler(progressChannel)
+	scheduler := task.NewTaskScheduler(&progressChannel)
 	taskDoneChannel := make(chan bool)
 
 	go func(outputChannel chan task.TaskOutput) {
