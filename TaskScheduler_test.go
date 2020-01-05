@@ -7,7 +7,7 @@ import (
 	"github.com/dunv/uhelpers"
 )
 
-func TestScheduleTwoShellTasks(t *testing.T) {
+func TestScheduleMultipleShellTasks(t *testing.T) {
 	progressChannel, outputChannel := setupTaskProgress()
 	scheduler := NewTaskScheduler(progressChannel)
 
@@ -17,11 +17,8 @@ func TestScheduleTwoShellTasks(t *testing.T) {
 	scheduler.Schedule(task)
 	scheduler.Schedule(task)
 
-	for {
-		if scheduler.todoList.Length() > 0 {
-			time.Sleep(200 * time.Millisecond)
-		}
-		break
+	for scheduler.todoList.Length() > 0 {
+		time.Sleep(200 * time.Millisecond)
 	}
 
 }

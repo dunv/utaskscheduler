@@ -99,8 +99,18 @@ func TestFunctionTimeout(t *testing.T) {
 }
 
 func runShell(cmd string, args []string, timeout time.Duration, workingDir ...string) bool {
+
 	progressChannel, outputChannel := setupTaskProgress()
 	task := NewShellTask(cmd, args, uhelpers.PtrToDuration(timeout), outputChannel)
+
+	// Make sure that locking in the String() function does not deadlock anything
+	go func(task *Task) {
+		for {
+			_ = task.String()
+			time.Sleep(time.Millisecond)
+		}
+	}(task)
+
 	if len(workingDir) == 1 {
 		task.workingDir = uhelpers.PtrToString(workingDir[0])
 	}
@@ -115,6 +125,15 @@ func runShell(cmd string, args []string, timeout time.Duration, workingDir ...st
 func runFunction(function func(ctx context.Context, outputChannel chan string) int, timeout time.Duration) bool {
 	progressChannel, outputChannel := setupTaskProgress()
 	task := NewFunctionTask(function, uhelpers.PtrToDuration(timeout), outputChannel)
+
+	// Make sure that locking in the String() function does not deadlock anything
+	go func(task *Task) {
+		for {
+			_ = task.String()
+			time.Sleep(time.Millisecond)
+		}
+	}(task)
+
 	returnChannel := make(chan bool)
 	task.Run(progressChannel, &returnChannel)
 	success := <-returnChannel

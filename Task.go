@@ -59,8 +59,9 @@ type Task struct {
 	finishedAt                  *time.Time
 
 	// making this construct thread-safe
-	outputLock sync.Mutex
-	statusLock sync.Mutex
+	outputLock   sync.Mutex
+	statusLock   sync.Mutex
+	progressLock sync.Mutex
 }
 
 func NewShellTask(
@@ -117,6 +118,9 @@ func NewFakeFailedTask(err error, taskMeta interface{}) *Task {
 }
 
 func (t *Task) String() string {
+	t.statusLock.Lock()
+	defer t.statusLock.Unlock()
+
 	cmd := t.command
 	if len(cmd) > 20 {
 		cmd = cmd[0:17] + "..."
@@ -130,7 +134,10 @@ func (t *Task) String() string {
 
 func (t *Task) Run(progressChannel *chan *Task, returnChannel *chan bool) context.CancelFunc {
 	t.returnChannel = returnChannel
+
+	t.progressLock.Lock()
 	t.progressChannel = progressChannel
+	t.progressLock.Unlock()
 
 	switch t.taskType {
 	case TASK_TYPE_SHELL:
@@ -261,6 +268,7 @@ func (t *Task) runShell() context.CancelFunc {
 func (t *Task) addOutput(outputType TaskOutputType, outputString string) {
 	t.outputLock.Lock()
 	defer t.outputLock.Unlock()
+
 	output := TaskOutput{
 		TaskGUID: t.taskGUID,
 		TaskMeta: t.taskMeta,
@@ -283,6 +291,9 @@ func (t *Task) returnTask(success bool) {
 
 // Helper for publishing into the progressUpdateChannel
 func (t *Task) sendProgressUpdate() {
+	t.progressLock.Lock()
+	defer t.progressLock.Unlock()
+
 	if t.progressChannel != nil {
 		*t.progressChannel <- t
 	}
