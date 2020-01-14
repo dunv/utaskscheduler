@@ -47,6 +47,9 @@ type Task struct {
 	// Variable for transporting metainformation in this task (i.e. what does it belong to etc.)
 	taskMeta interface{}
 
+	// if task is running, calling the cancelFunction should kill it
+	cancelFunc context.CancelFunc
+
 	// Information about the execution
 	timedOut                    bool
 	cancelled                   bool
@@ -59,9 +62,11 @@ type Task struct {
 	finishedAt                  *time.Time
 
 	// making this construct thread-safe
+	// TODO: find a way of doing this without locks by using channels and selects
 	outputLock   sync.Mutex
 	statusLock   sync.Mutex
 	progressLock sync.Mutex
+	cancelLock   sync.Mutex
 }
 
 func NewShellTask(
@@ -132,7 +137,7 @@ func (t *Task) String() string {
 	}
 }
 
-func (t *Task) Run(progressChannel *chan *Task, returnChannel *chan bool) context.CancelFunc {
+func (t *Task) Run(progressChannel *chan *Task, returnChannel *chan bool) {
 	t.returnChannel = returnChannel
 
 	t.progressLock.Lock()
@@ -141,15 +146,28 @@ func (t *Task) Run(progressChannel *chan *Task, returnChannel *chan bool) contex
 
 	switch t.taskType {
 	case TASK_TYPE_SHELL:
-		return t.runShell()
+		t.runShell()
 	default:
-		return t.runFunction()
+		t.runFunction()
 	}
 }
 
-func (t *Task) runFunction() context.CancelFunc {
+func (t *Task) Cancel() {
+	t.cancelLock.Lock()
+	defer t.cancelLock.Unlock()
+
+	if t.cancelFunc != nil {
+		t.cancelFunc()
+	}
+}
+
+func (t *Task) runFunction() {
 	functionOutputChannel := make(chan string)
-	ctx, cancelFunction := context.WithTimeout(context.Background(), t.timeout)
+	var ctx context.Context
+
+	t.cancelLock.Lock()
+	ctx, t.cancelFunc = context.WithTimeout(context.Background(), t.timeout)
+	t.cancelLock.Unlock()
 
 	go func(functionOutputChannel chan string) {
 		for output := range functionOutputChannel {
@@ -178,17 +196,20 @@ func (t *Task) runFunction() context.CancelFunc {
 			t.markAsFailed(exitCode, ctx.Err())
 		}
 	}(ctx, functionOutputChannel)
-	return cancelFunction
 }
 
-func (t *Task) runShell() context.CancelFunc {
+func (t *Task) runShell() {
 	// as exec.CommandContext predefinedly "only" sends cmd.Process.Kill(), we cannot use it here (https://golang.org/pkg/os/exec/#CommandContext)
 	// we want the childProcess and all other descendants to be killed as well
 	// https://medium.com/@felixge/killing-a-child-process-and-all-of-its-children-in-go-54079af94773
 	cmd := exec.Command(t.command, t.args...)
 
 	// Create our own context, so we can give a handle back which kills the process the way we want it to
-	ctx, cancelFunc := context.WithCancel(context.Background())
+	var ctx context.Context
+
+	t.cancelLock.Lock()
+	ctx, t.cancelFunc = context.WithCancel(context.Background())
+	t.cancelLock.Unlock()
 
 	// use process-group-id as handle instead of process-id
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -207,7 +228,7 @@ func (t *Task) runShell() context.CancelFunc {
 	// if the task could not be started -> set task attrs, publish err to output and return
 	if err != nil {
 		t.markAsFailed(-1, err, fmt.Sprintf("Error starting (%s)", err.Error()))
-		return cancelFunc
+		return
 	}
 
 	// initial output (helps for debugging what is actually being run here)
@@ -260,8 +281,6 @@ func (t *Task) runShell() context.CancelFunc {
 	case <-processEndedChannel:
 		t.finishedWithoutInterference = true
 	}
-
-	return cancelFunc
 }
 
 // Helper for processing output

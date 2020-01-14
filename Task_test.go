@@ -98,6 +98,63 @@ func TestFunctionTimeout(t *testing.T) {
 	}
 }
 
+func TestShellTaskCancel(t *testing.T) {
+	progressChannel, outputChannel := setupTaskProgress()
+	// Start a task which needs 4 seconds to complete, timeout is longer, so it would complete in time
+	task := NewShellTask("/bin/sh", []string{"-c", "sleep 4"}, uhelpers.PtrToDuration(5*time.Second), outputChannel)
+	returnChannel := make(chan bool)
+	go task.Run(progressChannel, &returnChannel)
+
+	time.Sleep(1 * time.Second)
+	task.Cancel()
+
+	success := <-returnChannel
+	// Add this so output is not fragmented by go-testing output
+	time.Sleep(500 * time.Millisecond)
+
+	if success {
+		t.Error("Task exited with success, but should have not")
+	}
+}
+
+func TestFunctionTaskCancel(t *testing.T) {
+
+	progressChannel, outputChannel := setupTaskProgress()
+	task := NewFunctionTask(func(ctx context.Context, outputChannel chan string) int {
+		start := time.Now()
+		for {
+			// output
+			outputChannel <- "running"
+
+			// if function gets 2 seconds to run: exit with success
+			if time.Since(start) > 2*time.Second {
+				return 0
+			}
+
+			// check for cancelled context "every 100ms"
+			select {
+			case <-ctx.Done():
+				return -1
+			case <-time.After(100 * time.Millisecond):
+				continue
+			}
+		}
+	}, uhelpers.PtrToDuration(3*time.Second), outputChannel)
+	returnChannel := make(chan bool)
+	go task.Run(progressChannel, &returnChannel)
+
+	time.Sleep(1 * time.Second)
+	task.Cancel()
+
+	success := <-returnChannel
+	// Add this so output is not fragmented by go-testing output
+	time.Sleep(500 * time.Millisecond)
+
+	if success {
+		t.Error("Task exited with success, but should have not")
+	}
+}
+
 func runShell(cmd string, args []string, timeout time.Duration, workingDir ...string) bool {
 
 	progressChannel, outputChannel := setupTaskProgress()
