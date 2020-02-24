@@ -8,7 +8,18 @@ import (
 
 	"github.com/dunv/uhelpers"
 	"github.com/dunv/ulog"
+	"github.com/stretchr/testify/assert"
 )
+
+func TestRunSimple(t *testing.T) {
+	task := NewShellTask("/bin/sh", []string{"-c", "echo hallo"}, uhelpers.PtrToDuration(time.Second), nil)
+	done := make(chan bool)
+	task.Run(nil, &done)
+	<-done
+	output := task.Output()
+	assert.Len(t, output, 3)
+	assert.Equal(t, "hallo", output[1].Output)
+}
 
 func TestShellTaskSuccessInTime(t *testing.T) {
 	success := runShell("/bin/sh", []string{"-c", "echo hello"}, 2*time.Second)

@@ -488,3 +488,12 @@ func (t *Task) Executed() bool {
 	defer t.statusLock.Unlock()
 	return t.executed
 }
+
+func (t *Task) Output() []TaskOutput {
+	t.outputLock.Lock()
+	defer t.outputLock.Unlock()
+
+	copy := []TaskOutput{}
+	copy = append(copy, t.output...)
+	return copy
+}
