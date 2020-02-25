@@ -227,7 +227,9 @@ func (t *Task) runShell() {
 
 	// if the task could not be started -> set task attrs, publish err to output and return
 	if err != nil {
-		t.markAsFailed(-1, err, fmt.Sprintf("Error starting (%s)", err.Error()))
+		go func() {
+			t.markAsFailed(-1, err, fmt.Sprintf("Error starting (%s)", err.Error()))
+		}()
 		return
 	}
 

@@ -21,6 +21,16 @@ func TestRunSimple(t *testing.T) {
 	assert.Equal(t, "hallo", output[1].Output)
 }
 
+func TestRunInitError(t *testing.T) {
+	task := NewShellTask("/bin/shNotExisting", []string{"-c", "echo hallo"}, uhelpers.PtrToDuration(time.Second), nil)
+	done := make(chan bool)
+	task.Run(nil, &done)
+	<-done
+	output := task.Output()
+	assert.Len(t, output, 1)
+	assert.Equal(t, "Error starting (fork/exec /bin/shNotExisting: no such file or directory)", output[0].Output)
+}
+
 func TestShellTaskSuccessInTime(t *testing.T) {
 	success := runShell("/bin/sh", []string{"-c", "echo hello"}, 2*time.Second)
 	if !success {
