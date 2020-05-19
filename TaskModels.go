@@ -20,10 +20,10 @@ type TaskStatusUpdate struct {
 	GUID       string      `json:"guid"`
 	Status     TaskStatus  `json:"status"`
 	Meta       interface{} `json:"meta"`
-	StartedAt  *time.Time  `json:"startedAt"`
-	FinishedAt *time.Time  `json:"finishedAt"`
+	StartedAt  *time.Time  `json:"startedAt,omitempty"`
+	FinishedAt *time.Time  `json:"finishedAt,omitempty"`
 	ExitCode   int         `json:"exitCode"`
-	Error      error       `json:"error"`
+	Error      error       `json:"error,omitempty"`
 	Executed   bool        `json:"executed"`
 }
 
@@ -42,11 +42,11 @@ const (
 )
 
 type TaskOutput struct {
-	TaskGUID uuid.UUID
-	TaskMeta interface{}
-	Time     time.Time
-	Type     TaskOutputType
-	Output   string
+	TaskGUID uuid.UUID      `json:"taskGuid"`
+	TaskMeta interface{}    `json:"taskMeta,omitempty"`
+	Time     time.Time      `json:"time"`
+	Type     TaskOutputType `json:"type"`
+	Output   string         `json:"output"`
 }
 
 func (t TaskOutput) String() string {
