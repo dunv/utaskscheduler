@@ -23,17 +23,18 @@ type Task struct {
 	timeout  time.Duration
 
 	// Shell-Task attributes
-	command    string
-	workingDir *string
-	args       []string
-	exitCode   int
-	executed   bool
+	command                  string
+	workingDir               *string
+	args                     []string
+	exitCode                 int
+	executed                 bool
+	printStartAndEndInOutput bool
 
 	// If not nil ReturnChannel will receive true or false, depending if the execution was successful
 	returnChannel *chan bool
 
 	// If not nil ProgressChannel will receive a copy of the task so its progress can be monitored
-	progressChannel *chan *Task
+	progressChannel *chan TaskStatusUpdate
 
 	// Function attributes
 	function func(ctx context.Context, outputChannel chan string) int
@@ -74,19 +75,26 @@ func NewShellTask(
 	args []string,
 	timeout *time.Duration,
 	outputChannel *chan TaskOutput,
+	printStartAndEndInOutputList ...bool,
 ) *Task {
 	usedTimeout := 10 * time.Second
 	if timeout != nil {
 		usedTimeout = *timeout
 	}
 
+	printStartAndEndInOutput := false
+	if len(printStartAndEndInOutputList) == 1 {
+		printStartAndEndInOutput = printStartAndEndInOutputList[0]
+	}
+
 	return &Task{
-		taskGUID:      uuid.New(),
-		taskType:      TASK_TYPE_SHELL,
-		outputChannel: outputChannel,
-		command:       command,
-		args:          args,
-		timeout:       usedTimeout,
+		taskGUID:                 uuid.New(),
+		taskType:                 TASK_TYPE_SHELL,
+		outputChannel:            outputChannel,
+		command:                  command,
+		args:                     args,
+		timeout:                  usedTimeout,
+		printStartAndEndInOutput: printStartAndEndInOutput,
 	}
 }
 
@@ -137,7 +145,7 @@ func (t *Task) String() string {
 	}
 }
 
-func (t *Task) Run(progressChannel *chan *Task, returnChannel *chan bool) {
+func (t *Task) Run(progressChannel *chan TaskStatusUpdate, returnChannel *chan bool) {
 	t.returnChannel = returnChannel
 
 	t.progressLock.Lock()
@@ -234,7 +242,9 @@ func (t *Task) runShell() {
 	}
 
 	// initial output (helps for debugging what is actually being run here)
-	t.addOutput(TASK_OUTPUT_STDOUT, fmt.Sprintf("Running command '%s %s'", t.command, strings.Join(t.args, " ")))
+	if t.printStartAndEndInOutput {
+		t.addOutput(TASK_OUTPUT_STDOUT, fmt.Sprintf("Running command '%s %s'", t.command, strings.Join(t.args, " ")))
+	}
 	t.markAsInProgress()
 
 	// So we can return here, the waiting for the task to be done processing is handled in a goRoutine
@@ -316,7 +326,19 @@ func (t *Task) sendProgressUpdate() {
 	defer t.progressLock.Unlock()
 
 	if t.progressChannel != nil {
-		*t.progressChannel <- t
+		t.statusLock.Lock()
+		update := TaskStatusUpdate{
+			GUID:       t.taskGUID.String(),
+			Status:     t.status,
+			Meta:       t.taskMeta,
+			StartedAt:  t.startedAt,
+			FinishedAt: t.finishedAt,
+			ExitCode:   t.exitCode,
+			Error:      t.taskError,
+			Executed:   t.executed,
+		}
+		t.statusLock.Unlock()
+		*t.progressChannel <- update
 	}
 }
 
@@ -414,7 +436,7 @@ func (t *Task) markAsSuccessful(output ...string) {
 	t.status = TASK_STATUS_SUCCESS
 	t.statusLock.Unlock()
 
-	if len(output) > 0 {
+	if t.printStartAndEndInOutput && len(output) > 0 {
 		t.addOutput(TASK_OUTPUT_STDOUT, strings.Join(output, ", "))
 	}
 	t.returnTask(true)

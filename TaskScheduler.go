@@ -24,7 +24,7 @@ type TaskScheduler struct {
 	doneList       *concurrentList.ConcurrentList
 }
 
-func NewTaskScheduler(progressChannel *chan *Task) TaskScheduler {
+func NewTaskScheduler(progressChannel *chan TaskStatusUpdate) TaskScheduler {
 	trigger := make(chan bool)
 	todoList := concurrentList.NewConcurrentList()
 	inProgressList := concurrentList.NewConcurrentList()

@@ -12,7 +12,7 @@ import (
 )
 
 func TestRunSimple(t *testing.T) {
-	task := NewShellTask("/bin/sh", []string{"-c", "echo hallo"}, uhelpers.PtrToDuration(time.Second), nil)
+	task := NewShellTask("/bin/sh", []string{"-c", "echo hallo"}, uhelpers.PtrToDuration(time.Second), nil, true)
 	done := make(chan bool)
 	task.Run(nil, &done)
 	<-done
@@ -220,8 +220,8 @@ func runFunction(function func(ctx context.Context, outputChannel chan string) i
 	return success
 }
 
-func setupTaskProgress() (*chan *Task, *chan TaskOutput) {
-	progressChannel := make(chan *Task)
+func setupTaskProgress() (*chan TaskStatusUpdate, *chan TaskOutput) {
+	progressChannel := make(chan TaskStatusUpdate)
 	outputChannel := make(chan TaskOutput)
 
 	go func(outputChannel chan TaskOutput) {
@@ -230,7 +230,7 @@ func setupTaskProgress() (*chan *Task, *chan TaskOutput) {
 		}
 	}(outputChannel)
 
-	go func(progressChannel chan *Task) {
+	go func(progressChannel chan TaskStatusUpdate) {
 		for progress := range progressChannel {
 			ulog.Info(progress)
 		}
