@@ -19,7 +19,7 @@ const (
 type TaskStatusUpdate struct {
 	GUID       string      `json:"guid"`
 	Status     TaskStatus  `json:"status"`
-	Meta       interface{} `json:"meta"`
+	Meta       interface{} `json:"meta,omitempty"`
 	StartedAt  *time.Time  `json:"startedAt,omitempty"`
 	FinishedAt *time.Time  `json:"finishedAt,omitempty"`
 	ExitCode   int         `json:"exitCode"`
