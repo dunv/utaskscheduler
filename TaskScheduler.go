@@ -38,7 +38,7 @@ func NewTaskScheduler(progressChannel *chan TaskStatusUpdate) TaskScheduler {
 			tasks, err := todoList.Shift()
 			if err == nil {
 				// Keep track
-				inProgressList.Append(tasks)
+				inProgressList.Push(tasks)
 
 				// Run tasks
 				tasksRunInParallel := len(tasks.([]*Task))
@@ -63,7 +63,7 @@ func NewTaskScheduler(progressChannel *chan TaskStatusUpdate) TaskScheduler {
 					ulog.Error("No tasks in progress, but done: this should never happen!")
 				}
 
-				doneList.Append(tasks)
+				doneList.Push(tasks)
 			} else {
 				ulog.Error("No tasks in list, but triggered: this should never happen!")
 				time.Sleep(1 * time.Second)
@@ -86,12 +86,12 @@ func (s TaskScheduler) triggerScheduling() {
 }
 
 func (s TaskScheduler) ScheduleParallel(tasks []*Task) {
-	s.todoList.Append(tasks)
+	s.todoList.Push(tasks)
 	s.triggerScheduling()
 }
 
 func (s TaskScheduler) Schedule(task *Task) {
-	s.todoList.Append([]*Task{task})
+	s.todoList.Push([]*Task{task})
 	task.MarkAsScheduled()
 	s.triggerScheduling()
 }
