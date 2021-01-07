@@ -117,16 +117,16 @@ func NewFunctionTask(
 	}
 }
 
-func NewFakeFailedTask(err error, taskMeta interface{}) *Task {
-	return &Task{
-		taskGUID:   uuid.New(),
-		status:     TASK_STATUS_FAILED,
-		startedAt:  uhelpers.PtrToTime(time.Now()),
-		finishedAt: uhelpers.PtrToTime(time.Now()),
-		executed:   true,
-		exitCode:   -1,
-		taskError:  err,
-		taskMeta:   taskMeta,
+func NewFakeFailedTaskStatusUpdate(err error, taskMeta interface{}) TaskStatusUpdate {
+	return TaskStatusUpdate{
+		GUID:       uuid.New().String(),
+		Status:     TASK_STATUS_FAILED,
+		StartedAt:  uhelpers.PtrToTime(time.Now()),
+		FinishedAt: uhelpers.PtrToTime(time.Now()),
+		Executed:   true,
+		ExitCode:   -1,
+		Error:      err,
+		Meta:       taskMeta,
 	}
 }
 
