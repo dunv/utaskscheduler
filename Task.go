@@ -23,6 +23,7 @@ type Task struct {
 	timeout  time.Duration
 
 	// Shell-Task attributes
+	env                      []string
 	command                  string
 	workingDir               *string
 	args                     []string
@@ -225,6 +226,10 @@ func (t *Task) runShell() {
 	// set working dir only if set in task
 	if t.workingDir != nil {
 		cmd.Dir = *t.workingDir
+	}
+
+	if t.env != nil {
+		cmd.Env = t.env
 	}
 
 	// Start listeners for output
@@ -468,6 +473,19 @@ func (t *Task) Status() TaskStatus {
 	t.statusLock.Lock()
 	defer t.statusLock.Unlock()
 	return t.status
+}
+
+func (t *Task) SetEnv(env []string) error {
+	if t.StartedAt() != nil {
+		return fmt.Errorf("task already in progress, cannot set env")
+	}
+
+	t.env = env
+	return nil
+}
+
+func (t *Task) Env() []string {
+	return t.env
 }
 
 func (t *Task) SetMeta(meta interface{}) error {
