@@ -69,6 +69,8 @@ type Task struct {
 	statusLock   sync.Mutex
 	progressLock sync.Mutex
 	cancelLock   sync.Mutex
+
+	outputConsumptionRoutines sync.WaitGroup
 }
 
 func NewShellTask(
@@ -298,6 +300,10 @@ func (t *Task) runShell() {
 	case <-processEndedChannel:
 		t.finishedWithoutInterference = true
 	}
+
+	// Wait until we have processed all the output so that we aren't missing any
+	// lines
+	t.outputConsumptionRoutines.Wait()
 }
 
 // Helper for processing output
@@ -353,7 +359,10 @@ func (t *Task) startConsumingOutputOfCommand(cmd *exec.Cmd) {
 	if err != nil {
 		ulog.Errorf("Could not create stdout pipe for task (%s)", err)
 	}
+
+	t.outputConsumptionRoutines.Add(1)
 	go func() {
+		defer t.outputConsumptionRoutines.Done()
 		reader := bufio.NewReader(stdout)
 		for {
 			line, err := reader.ReadString('\n')
@@ -368,7 +377,10 @@ func (t *Task) startConsumingOutputOfCommand(cmd *exec.Cmd) {
 	if err != nil {
 		ulog.Errorf("Could not create stderr pipe for task (%s)", err)
 	}
+
+	t.outputConsumptionRoutines.Add(1)
 	go func() {
+		defer t.outputConsumptionRoutines.Done()
 		reader := bufio.NewReader(stderr)
 		for {
 			line, err := reader.ReadString('\n')
