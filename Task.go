@@ -59,6 +59,7 @@ type Task struct {
 	taskError                   error
 	PanicIfLostControl          bool
 	DoNotKillOrphans            bool
+	TermSignal                  syscall.Signal
 	neededToKillOrphans         bool
 	startedAt                   *time.Time
 	finishedAt                  *time.Time
@@ -98,6 +99,7 @@ func NewShellTask(
 		args:                     args,
 		timeout:                  usedTimeout,
 		printStartAndEndInOutput: printStartAndEndInOutput,
+		TermSignal:               syscall.SIGKILL,
 	}
 }
 
@@ -397,7 +399,7 @@ func (t *Task) killProcessGroup(cmd *exec.Cmd) {
 	if cmd.Process != nil {
 
 		// "Use negative process group ID for killing the whole process group"
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		err := syscall.Kill(-cmd.Process.Pid, t.TermSignal)
 		if err != nil {
 			// from here on out this application is in an undefined unrecoverable state
 			// in most of my uses, it does not make sense to die here, as the process
