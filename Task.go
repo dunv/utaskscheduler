@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"sync"
@@ -259,6 +260,11 @@ func (t *Task) runShell() {
 	// So we can return here, the waiting for the task to be done processing is handled in a goRoutine
 	processEndedChannel := make(chan bool)
 	go func() {
+		// Wait until we have processed all the output so that we aren't missing any lines.
+		// It is crucial that we wait for the output to finish before we call cmd.Wait, because
+		// this will close the stdout and stderr pipes.
+		t.outputConsumptionRoutines.Wait()
+
 		err := cmd.Wait()
 		processEndedChannel <- true
 
@@ -302,10 +308,6 @@ func (t *Task) runShell() {
 	case <-processEndedChannel:
 		t.finishedWithoutInterference = true
 	}
-
-	// Wait until we have processed all the output so that we aren't missing any
-	// lines
-	t.outputConsumptionRoutines.Wait()
 }
 
 // Helper for processing output
@@ -368,10 +370,19 @@ func (t *Task) startConsumingOutputOfCommand(cmd *exec.Cmd) {
 		reader := bufio.NewReader(stdout)
 		for {
 			line, err := reader.ReadString('\n')
-			if err != nil {
-				return
+			line = strings.TrimSuffix(line, "\n")
+			if err == nil {
+				t.addOutput(TASK_OUTPUT_STDOUT, line)
+				continue
 			}
-			t.addOutput(TASK_OUTPUT_STDOUT, strings.TrimSuffix(line, "\n"))
+			if err == io.EOF {
+				if len(line) > 0 {
+					t.addOutput(TASK_OUTPUT_STDOUT, line)
+				}
+			} else {
+				ulog.Errorf("unexpected error when reading from stdout (%s)", err)
+			}
+			return
 		}
 	}()
 
@@ -386,10 +397,19 @@ func (t *Task) startConsumingOutputOfCommand(cmd *exec.Cmd) {
 		reader := bufio.NewReader(stderr)
 		for {
 			line, err := reader.ReadString('\n')
-			if err != nil {
-				return
+			line = strings.TrimSuffix(line, "\n")
+			if err == nil {
+				t.addOutput(TASK_OUTPUT_STDERR, strings.TrimSuffix(line, "\n"))
+				continue
 			}
-			t.addOutput(TASK_OUTPUT_STDERR, strings.TrimSuffix(line, "\n"))
+			if err == io.EOF {
+				if len(line) > 0 {
+					t.addOutput(TASK_OUTPUT_STDOUT, line)
+				}
+			} else {
+				ulog.Errorf("unexpected error when reading from stderr (%s)", err)
+			}
+			return
 		}
 	}()
 }
