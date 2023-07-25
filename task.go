@@ -29,6 +29,7 @@ type Task interface {
 	Status() TaskStatus
 	SetEnv(env []string) error
 	Env() []string
+	SetMeta(meta interface{}) error
 	Meta() interface{}
 	StartedAt() *time.Time
 	FinishedAt() *time.Time
