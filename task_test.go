@@ -1,4 +1,4 @@
-package utaskscheduler
+package utaskscheduler_test
 
 import (
 	"context"
@@ -8,11 +8,12 @@ import (
 
 	"github.com/dunv/uhelpers"
 	"github.com/dunv/ulog"
+	"github.com/dunv/utaskscheduler"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestRunSimple(t *testing.T) {
-	task := NewShellTask("/bin/sh", []string{"-c", "echo hallo"}, uhelpers.PtrToDuration(time.Second), nil, true)
+	task := utaskscheduler.NewShellTask("/bin/sh", []string{"-c", "echo hallo"}, uhelpers.PtrToDuration(time.Second), nil, true)
 	done := make(chan bool)
 	task.Run(nil, &done)
 	<-done
@@ -22,7 +23,7 @@ func TestRunSimple(t *testing.T) {
 }
 
 func TestRunInitError(t *testing.T) {
-	task := NewShellTask("/bin/shNotExisting", []string{"-c", "echo hallo"}, uhelpers.PtrToDuration(time.Second), nil)
+	task := utaskscheduler.NewShellTask("/bin/shNotExisting", []string{"-c", "echo hallo"}, uhelpers.PtrToDuration(time.Second), nil)
 	done := make(chan bool)
 	task.Run(nil, &done)
 	<-done
@@ -122,7 +123,7 @@ func TestFunctionTimeout(t *testing.T) {
 func TestShellTaskCancel(t *testing.T) {
 	progressChannel, outputChannel := setupTaskProgress()
 	// Start a task which needs 4 seconds to complete, timeout is longer, so it would complete in time
-	task := NewShellTask("/bin/sh", []string{"-c", "sleep 4"}, uhelpers.PtrToDuration(5*time.Second), outputChannel)
+	task := utaskscheduler.NewShellTask("/bin/sh", []string{"-c", "sleep 4"}, uhelpers.PtrToDuration(5*time.Second), outputChannel)
 	returnChannel := make(chan bool)
 	go task.Run(progressChannel, &returnChannel)
 
@@ -141,7 +142,7 @@ func TestShellTaskCancel(t *testing.T) {
 func TestFunctionTaskCancel(t *testing.T) {
 
 	progressChannel, outputChannel := setupTaskProgress()
-	task := NewFunctionTask(func(ctx context.Context, outputChannel chan string) int {
+	task := utaskscheduler.NewFunctionTask(func(ctx context.Context, outputChannel chan string) int {
 		start := time.Now()
 		for {
 			// output
@@ -179,10 +180,10 @@ func TestFunctionTaskCancel(t *testing.T) {
 func runShell(cmd string, args []string, timeout time.Duration, workingDir ...string) bool {
 
 	progressChannel, outputChannel := setupTaskProgress()
-	task := NewShellTask(cmd, args, uhelpers.PtrToDuration(timeout), outputChannel)
+	task := utaskscheduler.NewShellTask(cmd, args, uhelpers.PtrToDuration(timeout), outputChannel)
 
 	// Make sure that locking in the String() function does not deadlock anything
-	go func(task *Task) {
+	go func(task utaskscheduler.Task) {
 		for {
 			_ = task.String()
 			time.Sleep(time.Millisecond)
@@ -190,7 +191,9 @@ func runShell(cmd string, args []string, timeout time.Duration, workingDir ...st
 	}(task)
 
 	if len(workingDir) == 1 {
-		task.workingDir = uhelpers.PtrToString(workingDir[0])
+		if err := task.SetWorkingDir(workingDir[0]); err != nil {
+			return false
+		}
 	}
 	returnChannel := make(chan bool)
 	task.Run(progressChannel, &returnChannel)
@@ -202,35 +205,35 @@ func runShell(cmd string, args []string, timeout time.Duration, workingDir ...st
 
 func runFunction(function func(ctx context.Context, outputChannel chan string) int, timeout time.Duration) bool {
 	progressChannel, outputChannel := setupTaskProgress()
-	task := NewFunctionTask(function, uhelpers.PtrToDuration(timeout), outputChannel)
+	t := utaskscheduler.NewFunctionTask(function, uhelpers.PtrToDuration(timeout), outputChannel)
 
 	// Make sure that locking in the String() function does not deadlock anything
-	go func(task *Task) {
+	go func(task utaskscheduler.Task) {
 		for {
 			_ = task.String()
 			time.Sleep(time.Millisecond)
 		}
-	}(task)
+	}(t)
 
 	returnChannel := make(chan bool)
-	task.Run(progressChannel, &returnChannel)
+	t.Run(progressChannel, &returnChannel)
 	success := <-returnChannel
 	// Add this so output is not fragmented by go-testing output
 	time.Sleep(500 * time.Millisecond)
 	return success
 }
 
-func setupTaskProgress() (*chan TaskStatusUpdate, *chan TaskOutput) {
-	progressChannel := make(chan TaskStatusUpdate)
-	outputChannel := make(chan TaskOutput)
+func setupTaskProgress() (*chan utaskscheduler.TaskStatusUpdate, *chan utaskscheduler.TaskOutput) {
+	progressChannel := make(chan utaskscheduler.TaskStatusUpdate)
+	outputChannel := make(chan utaskscheduler.TaskOutput)
 
-	go func(outputChannel chan TaskOutput) {
+	go func(outputChannel chan utaskscheduler.TaskOutput) {
 		for output := range outputChannel {
 			ulog.Info(output)
 		}
 	}(outputChannel)
 
-	go func(progressChannel chan TaskStatusUpdate) {
+	go func(progressChannel chan utaskscheduler.TaskStatusUpdate) {
 		for progress := range progressChannel {
 			ulog.Info(progress)
 		}

@@ -17,7 +17,7 @@ const (
 )
 
 type TaskStatusUpdate struct {
-	GUID       string      `json:"guid"`
+	GUID       uuid.UUID   `json:"guid"`
 	Status     TaskStatus  `json:"status"`
 	Meta       interface{} `json:"meta,omitempty"`
 	StartedAt  *time.Time  `json:"startedAt,omitempty"`
