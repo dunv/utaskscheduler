@@ -5,7 +5,6 @@ import (
 	"time"
 
 	concurrentList "github.com/dunv/concurrentList/v2"
-	"github.com/dunv/ulog"
 	"github.com/google/uuid"
 )
 
@@ -38,6 +37,7 @@ func NewTaskScheduler(progressChannel *chan TaskStatusUpdate) TaskScheduler {
 	todoList := concurrentList.NewConcurrentList[[]Task]()
 	inProgressList := concurrentList.NewConcurrentList[[]Task]()
 	doneList := concurrentList.NewConcurrentList[[]Task]()
+	logger := defaultLogger{}
 
 	// Actual Scheduler
 	go func() {
@@ -53,8 +53,7 @@ func NewTaskScheduler(progressChannel *chan TaskStatusUpdate) TaskScheduler {
 				tasksRunInParallel := len(tasks)
 				waitForAllToBeFinishedChannel := make(chan bool, tasksRunInParallel)
 				for _, task := range tasks {
-					// progressChannel <- *task
-					task.Run(progressChannel, &waitForAllToBeFinishedChannel)
+					task.RunRedirectStatus(progressChannel, &waitForAllToBeFinishedChannel)
 				}
 
 				// Wait for group to finish
@@ -69,12 +68,12 @@ func NewTaskScheduler(progressChannel *chan TaskStatusUpdate) TaskScheduler {
 				// Keep track
 				_, err = inProgressList.Shift()
 				if err != nil {
-					ulog.Error("No tasks in progress, but done: this should never happen!")
+					logger.Errorf("No tasks in progress, but done: this should never happen!")
 				}
 
 				doneList.Push(tasks)
 			} else {
-				ulog.Error("No tasks in list, but triggered: this should never happen!")
+				logger.Errorf("No tasks in list, but triggered: this should never happen!")
 				time.Sleep(1 * time.Second)
 			}
 		}

@@ -12,25 +12,28 @@ import (
 	"time"
 
 	"github.com/dunv/uhelpers"
-	"github.com/dunv/ulog"
 	"github.com/google/uuid"
 )
 
 type Task interface {
 	String() string
-	Run(progressChannel *chan TaskStatusUpdate, returnChannel *chan bool)
+
+	// Control
+	Run()
+	RunRedirectStatus(progressChannel *chan TaskStatusUpdate, returnChannel *chan bool)
 	Cancel()
 	MarkAsScheduled()
+
+	// Get metadata
 	GUID() uuid.UUID
 	Command() string
 	Args() []string
-	SetWorkingDir(dir string) error
-	WorkingDir() *string
+	WorkingDir() string
 	Status() TaskStatus
-	SetEnv(env []string) error
 	Env() []string
-	SetMeta(meta interface{}) error
 	Meta() interface{}
+
+	// Get Status
 	StartedAt() *time.Time
 	FinishedAt() *time.Time
 	ExitCode() int
@@ -40,38 +43,15 @@ type Task interface {
 }
 
 type task struct {
-	// General attributes
-	taskGUID uuid.UUID
-	taskType TaskType
-	status   TaskStatus
-	timeout  time.Duration
+	opts taskOptions
 
-	// Shell-Task attributes
-	env                      []string
-	command                  string
-	workingDir               *string
-	args                     []string
-	exitCode                 int
-	executed                 bool
-	printStartAndEndInOutput bool
+	status TaskStatus
 
-	// If not nil ReturnChannel will receive true or false, depending if the execution was successful
-	returnChannel *chan bool
-
-	// If not nil ProgressChannel will receive a copy of the task so its progress can be monitored
-	progressChannel *chan TaskStatusUpdate
-
-	// Function attributes
-	function func(ctx context.Context, outputChannel chan string) int
-
-	// If not nil: all output is streamed
-	outputChannel *chan TaskOutput
+	exitCode int
+	executed bool
 
 	// All output is collected here
 	output []TaskOutput
-
-	// Variable for transporting metainformation in this task (i.e. what does it belong to etc.)
-	taskMeta interface{}
 
 	// if task is running, calling the cancelFunction should kill it
 	cancelFunc context.CancelFunc
@@ -81,15 +61,11 @@ type task struct {
 	cancelled                   bool
 	finishedWithoutInterference bool
 	taskError                   error
-	PanicIfLostControl          bool
-	DoNotKillOrphans            bool
-	TermSignal                  syscall.Signal
 	neededToKillOrphans         bool
 	startedAt                   *time.Time
 	finishedAt                  *time.Time
 
 	// making this construct thread-safe
-	// TODO: find a way of doing this without locks by using channels and selects
 	outputLock   sync.Mutex
 	statusLock   sync.Mutex
 	progressLock sync.Mutex
@@ -98,52 +74,26 @@ type task struct {
 	outputConsumptionRoutines sync.WaitGroup
 }
 
-func NewShellTask(
-	command string,
-	args []string,
-	timeout *time.Duration,
-	outputChannel *chan TaskOutput,
-	printStartAndEndInOutputList ...bool,
-) Task {
-	usedTimeout := 10 * time.Second
-	if timeout != nil {
-		usedTimeout = *timeout
+func NewTask(opts ...TaskOption) (Task, error) {
+	mergedOpts := taskOptions{
+		UID:             uuid.New(),
+		timeout:         10 * time.Second,
+		shellTermSignal: syscall.SIGKILL,
+		logger:          defaultLogger{},
+	}
+	for _, opt := range opts {
+		if err := opt.apply(&mergedOpts); err != nil {
+			return nil, err
+		}
 	}
 
-	printStartAndEndInOutput := false
-	if len(printStartAndEndInOutputList) == 1 {
-		printStartAndEndInOutput = printStartAndEndInOutputList[0]
-	}
-
-	return &task{
-		taskGUID:                 uuid.New(),
-		taskType:                 TASK_TYPE_SHELL,
-		outputChannel:            outputChannel,
-		command:                  command,
-		args:                     args,
-		timeout:                  usedTimeout,
-		printStartAndEndInOutput: printStartAndEndInOutput,
-		TermSignal:               syscall.SIGKILL,
-	}
-}
-
-func NewFunctionTask(
-	function func(ctx context.Context, outputChannel chan string) int,
-	timeout *time.Duration,
-	outputChannel *chan TaskOutput,
-) *task {
-	usedTimeout := 10 * time.Second
-	if timeout != nil {
-		usedTimeout = *timeout
+	if mergedOpts.taskType == "" {
+		return nil, fmt.Errorf("required options WithFunction or WithShell not set")
 	}
 
 	return &task{
-		taskGUID:      uuid.New(),
-		taskType:      TASK_TYPE_FUNCTION,
-		outputChannel: outputChannel,
-		function:      function,
-		timeout:       usedTimeout,
-	}
+		opts: mergedOpts,
+	}, nil
 }
 
 func NewFakeFailedTaskStatusUpdate(err error, taskMeta interface{}) TaskStatusUpdate {
@@ -163,30 +113,36 @@ func (t *task) String() string {
 	t.statusLock.Lock()
 	defer t.statusLock.Unlock()
 
-	cmd := t.command
+	if t.opts.taskType == TASK_TYPE_FUNCTION {
+		return fmt.Sprintf(`Task[type:%s timeout:%s status:%s]`, t.opts.taskType, t.opts.timeout, t.status)
+	}
+
+	cmd := t.opts.shellCommand
 	if len(cmd) > 20 {
 		cmd = cmd[0:17] + "..."
 	}
-	if t.taskType == TASK_TYPE_FUNCTION {
-		return fmt.Sprintf(`Task[type:%s timeout:%s status:%s]`, t.taskType, t.timeout, t.status)
-	} else {
-		return fmt.Sprintf(`Task[type:%s timeout:%s command:"%s" status:%s]`, t.taskType, t.timeout, cmd, t.status)
-	}
+	return fmt.Sprintf(`Task[type:%s timeout:%s command:"%s" status:%s]`, t.opts.taskType, t.opts.timeout, cmd, t.status)
 }
 
-func (t *task) Run(progressChannel *chan TaskStatusUpdate, returnChannel *chan bool) {
-	t.returnChannel = returnChannel
-
-	t.progressLock.Lock()
-	t.progressChannel = progressChannel
-	t.progressLock.Unlock()
-
-	switch t.taskType {
-	case TASK_TYPE_SHELL:
-		t.runShell()
-	default:
+func (t *task) Run() {
+	if t.opts.taskType == TASK_TYPE_FUNCTION {
 		t.runFunction()
+		return
 	}
+
+	t.runShell()
+}
+
+func (t *task) RunRedirectStatus(progressChannel *chan TaskStatusUpdate, returnChannel *chan bool) {
+	t.opts.progressChannel = progressChannel
+	t.opts.returnChannel = returnChannel
+
+	if t.opts.taskType == TASK_TYPE_FUNCTION {
+		t.runFunction()
+		return
+	}
+
+	t.runShell()
 }
 
 func (t *task) Cancel() {
@@ -203,7 +159,7 @@ func (t *task) runFunction() {
 	var ctx context.Context
 
 	t.cancelLock.Lock()
-	ctx, t.cancelFunc = context.WithTimeout(context.Background(), t.timeout)
+	ctx, t.cancelFunc = context.WithTimeout(context.Background(), t.opts.timeout)
 	t.cancelLock.Unlock()
 
 	go func(functionOutputChannel chan string) {
@@ -217,7 +173,7 @@ func (t *task) runFunction() {
 
 		// We are not adding a timeout here, so if a function runs indefinitely this is blocking as well.
 		// Canceling needs to be handled within function
-		exitCode := t.function(ctx, functionOutputChannel)
+		exitCode := t.opts.fn(ctx, functionOutputChannel)
 
 		close(functionOutputChannel)
 
@@ -239,7 +195,7 @@ func (t *task) runShell() {
 	// as exec.CommandContext predefinedly "only" sends cmd.Process.Kill(), we cannot use it here (https://golang.org/pkg/os/exec/#CommandContext)
 	// we want the childProcess and all other descendants to be killed as well
 	// https://medium.com/@felixge/killing-a-child-process-and-all-of-its-children-in-go-54079af94773
-	cmd := exec.Command(t.command, t.args...)
+	cmd := exec.Command(t.opts.shellCommand, t.opts.shellArgs...)
 
 	// Create our own context, so we can give a handle back which kills the process the way we want it to
 	var ctx context.Context
@@ -252,12 +208,9 @@ func (t *task) runShell() {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	// set working dir only if set in task
-	if t.workingDir != nil {
-		cmd.Dir = *t.workingDir
-	}
-
-	if t.env != nil {
-		cmd.Env = t.env
+	cmd.Dir = t.opts.shellWorkingDir
+	if t.opts.shellEnv != nil {
+		cmd.Env = t.opts.shellEnv
 	}
 
 	// Start listeners for output
@@ -275,8 +228,8 @@ func (t *task) runShell() {
 	}
 
 	// initial output (helps for debugging what is actually being run here)
-	if t.printStartAndEndInOutput {
-		t.addOutput(TASK_OUTPUT_STDOUT, fmt.Sprintf("Running command '%s %s'", t.command, strings.Join(t.args, " ")))
+	if t.opts.printStartAndEndInOutput {
+		t.addOutput(TASK_OUTPUT_STDOUT, fmt.Sprintf("Running command '%s %s'", t.opts.shellCommand, strings.Join(t.opts.shellArgs, " ")))
 	}
 	t.markAsInProgress()
 
@@ -306,7 +259,7 @@ func (t *task) runShell() {
 
 		// This could create problems (https://github.com/golang/go/issues/13987),
 		// but I never noticed any in 4 years of production usage
-		if !t.DoNotKillOrphans {
+		if !t.opts.shellDoNotKillOrphans {
 			// Make sure there are no remnants left
 			err = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			// fmt.Printf("%+v %T\n", err, err)
@@ -324,7 +277,7 @@ func (t *task) runShell() {
 		t.cancelled = true
 		// After killing cmd.Wait() will return, this way we can cleanly exit here
 		<-processEndedChannel
-	case <-time.After(t.timeout):
+	case <-time.After(t.opts.timeout):
 		t.killProcessGroup(cmd)
 		t.timedOut = true
 		// After killing cmd.Wait() will return, this way we can cleanly exit here
@@ -340,22 +293,22 @@ func (t *task) addOutput(outputType TaskOutputType, outputString string) {
 	defer t.outputLock.Unlock()
 
 	output := TaskOutput{
-		TaskGUID: t.taskGUID,
-		TaskMeta: t.taskMeta,
+		TaskGUID: t.opts.UID,
+		TaskMeta: t.opts.meta,
 		Time:     time.Now(),
 		Type:     outputType,
 		Output:   outputString,
 	}
-	if t.outputChannel != nil {
-		*t.outputChannel <- output
+	if t.opts.outputChannel != nil {
+		*t.opts.outputChannel <- output
 	}
 	t.output = append(t.output, output)
 }
 
 // Helper for publishing into the returnChannel
 func (t *task) returnTask(success bool) {
-	if t.returnChannel != nil {
-		*t.returnChannel <- success
+	if t.opts.returnChannel != nil {
+		*t.opts.returnChannel <- success
 	}
 }
 
@@ -364,12 +317,12 @@ func (t *task) sendProgressUpdate() {
 	t.progressLock.Lock()
 	defer t.progressLock.Unlock()
 
-	if t.progressChannel != nil {
+	if t.opts.progressChannel != nil {
 		t.statusLock.Lock()
 		update := TaskStatusUpdate{
-			GUID:       t.taskGUID,
+			GUID:       t.opts.UID,
 			Status:     t.status,
-			Meta:       t.taskMeta,
+			Meta:       t.opts.meta,
 			StartedAt:  t.startedAt,
 			FinishedAt: t.finishedAt,
 			ExitCode:   t.exitCode,
@@ -377,7 +330,7 @@ func (t *task) sendProgressUpdate() {
 			Executed:   t.executed,
 		}
 		t.statusLock.Unlock()
-		*t.progressChannel <- update
+		*t.opts.progressChannel <- update
 	}
 }
 
@@ -385,7 +338,7 @@ func (t *task) sendProgressUpdate() {
 func (t *task) startConsumingOutputOfCommand(cmd *exec.Cmd) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		ulog.Errorf("Could not create stdout pipe for task (%s)", err)
+		t.opts.logger.Errorf("Could not create stdout pipe for task (%s)\n", err)
 	}
 
 	t.outputConsumptionRoutines.Add(1)
@@ -404,7 +357,7 @@ func (t *task) startConsumingOutputOfCommand(cmd *exec.Cmd) {
 					t.addOutput(TASK_OUTPUT_STDOUT, line)
 				}
 			} else {
-				ulog.Errorf("unexpected error when reading from stdout (%s)", err)
+				t.opts.logger.Errorf("unexpected error when reading from stdout (%s)", err)
 			}
 			return
 		}
@@ -412,7 +365,7 @@ func (t *task) startConsumingOutputOfCommand(cmd *exec.Cmd) {
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		ulog.Errorf("Could not create stderr pipe for task (%s)", err)
+		t.opts.logger.Errorf("Could not create stderr pipe for task (%s)", err)
 	}
 
 	t.outputConsumptionRoutines.Add(1)
@@ -431,7 +384,7 @@ func (t *task) startConsumingOutputOfCommand(cmd *exec.Cmd) {
 					t.addOutput(TASK_OUTPUT_STDOUT, line)
 				}
 			} else {
-				ulog.Errorf("unexpected error when reading from stderr (%s)", err)
+				t.opts.logger.Errorf("unexpected error when reading from stderr (%s)", err)
 			}
 			return
 		}
@@ -443,16 +396,17 @@ func (t *task) killProcessGroup(cmd *exec.Cmd) {
 	if cmd.Process != nil {
 
 		// "Use negative process group ID for killing the whole process group"
-		err := syscall.Kill(-cmd.Process.Pid, t.TermSignal)
+		err := syscall.Kill(-cmd.Process.Pid, t.opts.shellTermSignal)
 		if err != nil {
 			// from here on out this application is in an undefined unrecoverable state
 			// in most of my uses, it does not make sense to die here, as the process
 			// will be restarted indefinitly and most possibly run into the same problem
 			// just in case we can tell the task to die anyways if wanted
-			if t.PanicIfLostControl {
-				ulog.Panicf("cannot kill child process (%s) --> panicking as a last resord", err)
+			if t.opts.shellPanicIfLostControl {
+				t.opts.logger.Errorf("cannot kill child process (%s) --> panicking as a last resord", err)
+				panic(fmt.Sprintf("cannot kill child process (%s) --> panicking as a last resord", err))
 			} else {
-				ulog.Errorf("cannot kill child process (%s)", err)
+				t.opts.logger.Errorf("cannot kill child process (%s)", err)
 			}
 		}
 	}
@@ -499,7 +453,7 @@ func (t *task) markAsSuccessful(output ...string) {
 	t.status = TASK_STATUS_SUCCESS
 	t.statusLock.Unlock()
 
-	if t.printStartAndEndInOutput && len(output) > 0 {
+	if t.opts.printStartAndEndInOutput && len(output) > 0 {
 		t.addOutput(TASK_OUTPUT_STDOUT, strings.Join(output, ", "))
 	}
 	t.returnTask(true)
@@ -507,63 +461,33 @@ func (t *task) markAsSuccessful(output ...string) {
 }
 
 func (t *task) GUID() uuid.UUID {
-	return t.taskGUID
+	return t.opts.UID
 }
 
 func (t *task) Command() string {
-	return t.command
+	return t.opts.shellCommand
 }
 
 func (t *task) Args() []string {
-	return t.args
+	return t.opts.shellArgs
 }
 
-func (t *task) SetWorkingDir(dir string) error {
-	if t.StartedAt() != nil {
-		return fmt.Errorf("task already in progress, cannot set working dir")
-	}
-
-	t.workingDir = uhelpers.PtrToString(dir)
-	return nil
+func (t *task) WorkingDir() string {
+	return t.opts.shellWorkingDir
 }
 
-func (t *task) WorkingDir() *string {
-	if t.workingDir != nil {
-		return uhelpers.Ptr(*t.workingDir)
-	}
-	return nil
+func (t *task) Env() []string {
+	return t.opts.shellEnv
+}
+
+func (t *task) Meta() interface{} {
+	return t.opts.meta
 }
 
 func (t *task) Status() TaskStatus {
 	t.statusLock.Lock()
 	defer t.statusLock.Unlock()
 	return t.status
-}
-
-func (t *task) SetEnv(env []string) error {
-	if t.StartedAt() != nil {
-		return fmt.Errorf("task already in progress, cannot set env")
-	}
-
-	t.env = env
-	return nil
-}
-
-func (t *task) Env() []string {
-	return t.env
-}
-
-func (t *task) SetMeta(meta interface{}) error {
-	if t.StartedAt() != nil {
-		return fmt.Errorf("task already in progress, cannot set meta")
-	}
-
-	t.taskMeta = meta
-	return nil
-}
-
-func (t *task) Meta() interface{} {
-	return t.taskMeta
 }
 
 func (t *task) StartedAt() *time.Time {

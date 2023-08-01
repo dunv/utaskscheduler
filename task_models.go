@@ -27,6 +27,12 @@ type TaskStatusUpdate struct {
 	Executed   bool        `json:"executed"`
 }
 
+func (t TaskStatusUpdate) String() string {
+	return fmt.Sprintf(`TaskStatusUpdate[guid:%s status:%s exitCode:%d err:%v executed:%t ]`,
+		t.GUID, t.Status, t.ExitCode, t.Error, t.Executed,
+	)
+}
+
 type TaskType string
 
 const (
